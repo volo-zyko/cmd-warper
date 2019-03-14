@@ -1,18 +1,24 @@
-#ifdef _WIN32
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
+#include <time.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <sys/locking.h>
 #include <windows.h>
 #else
-#include <assert.h>
-#include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <unistd.h>
 #endif // _WIN32
 
 size_t append(const char** array, const size_t arrayLen, char** result)
 {
-    for (size_t i = 0; i < arrayLen; ++i)
+    size_t i;
+    for (i = 0; i < arrayLen; ++i)
     {
         result[i] = strdup(array[i]);
     }
@@ -50,8 +56,26 @@ int main(const int argc, const char* argv[], char* envp[])
     }
     strcat(commandLine, "\"");
 
-    FILE* log = fopen("cmd-warper.log", "w+b");
-    fprintf(log, "%s\n", commandLine);
+    FILE* log = fopen("cmd-warper.log", "a+b");
+    // Always lock at the beginning of the file.
+    fseek(log, 0, SEEK_SET);
+    do
+    {
+        if (_locking(fileno(log), _LK_LOCK|_LK_NBLCK, 1) == 0)
+        {
+            break;
+        }
+        else if (errno != EDEADLOCK)
+        {
+            perror("_locking failed");
+            ExitProcess(1);
+        }
+    }
+    while (1);
+    // Return to the end of file for appending.
+    fseek(log, 0, SEEK_END);
+
+    fprintf(log, "@%lld: %s\n", (long long) time(NULL), commandLine);
     fclose(log);
 
     STARTUPINFO startupInfo;
@@ -108,8 +132,24 @@ int main(const int argc, const char* argv[], char* envp[])
     appendIndex += append(&argv[1], argc - 1, &fullArgs[appendIndex]);
     fullArgs[appendIndex] = NULL;
 
-    FILE* log = fopen("cmd-warper.log", "w+b");
-    for (size_t i = 0; i < appendIndex - 1; ++i)
+    FILE* log = fopen("cmd-warper.log", "a+b");
+    do
+    {
+        if (flock(fileno(log), LOCK_EX|LOCK_NB) == 0)
+        {
+            break;
+        }
+        else if (errno != EWOULDBLOCK)
+        {
+            perror("flock failed");
+            exit(EXIT_FAILURE);
+        }
+    }
+    while (1);
+
+    size_t i;
+    fprintf(log, "@%lld: ", (long long) time(NULL));
+    for (i = 0; i < appendIndex - 1; ++i)
     {
         fprintf(log, "%s ", fullArgs[i]);
     }
